@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>p5.glsl — Shadertoy p5 emulator</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #err {
+    display: none; position: fixed; inset: 0; margin: 0; padding: 16px;
+    background: #300; color: #fbb; font: 12px/1.5 monospace;
+    white-space: pre-wrap; overflow: auto;
+  }
+</style>
+<canvas id="c"></canvas>
+<pre id="err"></pre>
+<script>
+// Minimal Shadertoy-compatible harness: provides iResolution, iTime,
+// iTimeDelta, iFrame, iMouse and calls mainImage(). The shader source in
+// p5.glsl is exactly what you paste into shadertoy.com.
+const canvas = document.getElementById('c');
+const overlay = document.getElementById('err');
+const gl = canvas.getContext('webgl2', { antialias: false });
+
+const VS = `#version 300 es
+void main() {
+  vec2 v = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  gl_Position = vec4(v * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s) + '\n--- source ---\n' +
+      src.split('\n').map((l, i) => (i + 1) + ': ' + l).join('\n'));
+  return s;
+}
+
+async function main() {
+  const user = await (await fetch('p5.glsl?ts=' + Date.now())).text();
+  const FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform vec3 iResolution;
+uniform float iTime;
+uniform float iTimeDelta;
+uniform int iFrame;
+uniform vec4 iMouse;
+out vec4 _stFragColor;
+${user}
+void main() { mainImage(_stFragColor, gl_FragCoord.xy); }`;
+
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(prog));
+  } catch (e) {
+    overlay.textContent = e.message;
+    overlay.style.display = 'block';
+    console.error(e.message);
+    return;
+  }
+  gl.useProgram(prog);
+
+  const u = n => gl.getUniformLocation(prog, n);
+  const uRes = u('iResolution'), uTime = u('iTime'), uDelta = u('iTimeDelta');
+  const uFrame = u('iFrame'), uMouse = u('iMouse');
+
+  // Shadertoy mouse convention: xy = drag position, zw = click position,
+  // z > 0 while the button is held. y origin bottom-left.
+  const mouse = { x: 0, y: 0, cx: 0, cy: 0, down: false };
+  function setM(e) {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - r.left) * canvas.width / r.width;
+    mouse.y = canvas.height - (e.clientY - r.top) * canvas.height / r.height;
+  }
+  canvas.addEventListener('pointerdown', e => {
+    mouse.down = true; setM(e); mouse.cx = mouse.x; mouse.cy = mouse.y;
+  });
+  addEventListener('pointerup', () => { mouse.down = false; });
+  canvas.addEventListener('pointermove', e => { if (mouse.down) setM(e); });
+
+  let frame = 0, t0 = performance.now(), last = t0;
+  function loop(now) {
+    const w = canvas.clientWidth, h = canvas.clientHeight;   // dpr 1, like Shadertoy
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+    gl.uniform3f(uRes, w, h, 1);
+    gl.uniform1f(uTime, (now - t0) / 1000);
+    gl.uniform1f(uDelta, (now - last) / 1000); last = now;
+    gl.uniform1i(uFrame, frame++);
+    gl.uniform4f(uMouse, mouse.x, mouse.y,
+      mouse.down ? mouse.cx : -mouse.cx,
+      mouse.down ? mouse.cy : -mouse.cy);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+}
+main();
+</script>
